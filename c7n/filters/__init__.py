@@ -27,6 +27,6 @@ from .core import (
     StateTransitionFilter,)
 from .config import ConfigCompliance
 from .health import HealthEventFilter
-from .iamaccess import CrossAccountAccessFilter, PolicyChecker
+from .iamaccess import CrossAccountAccessFilter, HasStatementFilter, PolicyChecker
 from .metrics import MetricsFilter, ShieldMetrics
 from .vpc import DefaultVpcBase

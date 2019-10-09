@@ -42,7 +42,7 @@ import json
 
 import six
 
-from c7n.filters import Filter
+from c7n.filters import Filter, OPERATORS
 from c7n.resolver import ValuesFrom
 from c7n.utils import type_schema
 
@@ -347,3 +347,203 @@ class CrossAccountAccessFilter(Filter):
         if violations:
             r[self.annotation_key] = violations
             return True
+
+
+class HasStatementFilter(Filter):
+    """Find resources with set of policy statements.
+    Allows the use of value filter operations for string or array values
+    Value operations are supported for all fields except Effect and Condition.
+
+    Normalization performed:
+    - Action/NotAction are normalized to be lower-cased
+     (e.g. SNS:AddPermission to sns:addpermission)
+    - Principal/NotPrincipal are normalized to operate against the nested values
+     (e.g. {"Service": ["s3.amazonaws.com"]} -> ["s3.amazonaws.com"], {"AWS": "*"} -> "*"}
+    - Values filters are normalized to handle set operations vs string operations
+     (e.g. if the policy value is an array and the filter op is "in", the op will be changed to
+     "intersect")
+
+    Note that this filter is not a full-fledged approach for determining actual permissions granted
+     via IAM or resource policies. Too many variations are possible to reliably (e.g. NotPrincipal
+     vs Principal, use Conditions, use of wildcards in actions) to make this feasible without actual
+     policy simulation with the context of a specific principal and metadata.
+
+
+    :example:
+
+    .. code-block:: yaml
+
+            policies:
+              - name: s3-bucket-has-statement
+                resource: s3
+                filters:
+                  - type: has-statement
+                    statement_ids:
+                      - RequiredEncryptedPutObject
+
+            policies:
+              - name: sqs-allows-s3-publish
+                resource: sqs
+                filters:
+                  - type: has-statement
+                    statements:
+                      - Effect: Allow
+                        Action:
+                            op: in
+                            value:
+                                - 'sns:*'
+                                - 'sns:Publish'
+                        Principal: 's3.amazonaws.com'
+                        Condition: null
+
+            policies:
+              - name: sns-allow-all-users
+                resource: sns
+                filters:
+                  - type: has-statement
+                    statements:
+                      - Effect: Allow
+                        Action:
+                            op: intersect
+                            value:
+                                - 'sns:*'
+                                - 'sns:*Permission'
+                                - 'sns:AddPermission'
+                                - 'sns:DeleteTopic'
+                                - 'sns:Publish'
+                                - 'sns:Receive'
+                                - 'sns:RemovePermission'
+                                - 'sns:SetTopicAttribute'
+                                - 'sns:Subscribe'
+                        Principal: '*'
+                        Condition: null
+    """
+    _array_filter_schema = {'anyOf': [
+        {'type': 'string'}, {'type': 'array'}, {'type': 'null'},
+        {'type': 'object',
+         'properties': {
+             'op': {'$ref': '#/definitions/filters_common/comparison_operators'},
+             'value': {'anyOf': [
+                 {'type': 'string'}, {'type': 'array'}, {'type': 'null'}]}
+         }}]}
+    schema = type_schema(
+        'has-statement',
+        statement_ids={'type': 'array', 'items': {'type': 'string'}},
+        statements={
+            'type': 'array',
+            'items': {
+                'type': 'object',
+                'properties': {
+                    'Sid': {'anyOf': [{'type': 'string'},
+                        {
+                            'type': 'object',
+                            'properties': {
+                                'op': {'$ref': '#/definitions/filters_common/comparison_operators'},
+                                'value': {'anyOf': [
+                                    {'type': 'string'}, {'type': 'array'}, {'type': 'null'}]}
+                            }}]},
+                    'Effect': {'type': 'string', 'enum': ['Allow', 'Deny']},
+                    'Principal': _array_filter_schema,
+                    'NotPrincipal': _array_filter_schema,
+                    'Action': _array_filter_schema,
+                    'NotAction': _array_filter_schema,
+                    'Resource': _array_filter_schema,
+                    'NotResource': _array_filter_schema,
+                    'Condition': {
+                        'anyOf': [{'type': 'object'}, {'type': 'null'}]}
+                },
+                'required': ['Effect']
+            }
+        })
+
+    policy_attribute = 'Policy'
+    annotation_key = 'HasStatement'
+
+    def process(self, resources, event=None):
+        return list(filter(None, map(self.process_resources, resources)))
+
+    def get_resource_policy(self, r):
+        return r.get(self.policy_attribute, None)
+
+    def process_resources(self, resc):
+        p = self.get_resource_policy(resc)
+        if p is None:
+            return None
+
+        if isinstance(p, six.string_types):
+            p = json.loads(p)
+
+        required = list(self.data.get('statement_ids', []))
+        statements = p.get('Statement', [])
+        for s in list(statements):
+            if s.get('Sid') in required:
+                required.remove(s['Sid'])
+            # Normalize statements for queries
+            if 'Action' in s:
+                s['Action'] = self.normalize_action(s['Action'])
+            elif 'NotAction' in s:
+                s['NotAction'] = self.normalize_action(s['NotAction'])
+            if 'Principal' in s and isinstance(s['Principal'], dict):
+                s['Principal'] = s['Principal'].values()
+            elif 'NotPrincipal' in s and isinstance(s['NotPrincipal'], dict):
+                s['NotPrincipal'] = s['NotPrincipal'].values()
+
+        required_statements = list(self.data.get('statements', []))
+        for required_statement in required_statements:
+            for key, value in required_statement.items():
+                if key in ['Action', 'NotAction'] and value.get('value', None):
+                    value['value'] = self.normalize_action(value['value'])
+
+            for statement in statements:
+                found = 0
+                for key, value in required_statement.items():
+                    if not isinstance(value, dict):
+                        match = value == statement[key] if key in statement else value is None
+                    else:
+                        op = value.get('op', 'equal')
+                        comparison = OPERATORS[op]
+                        statement_value = statement[key] if key in statement else None
+                        required_value = value.get('value')
+                        is_list = isinstance(statement_value, list)
+                        require_list = isinstance(required_value, list)
+                        # Normalize set operations to handle the fact that values can be an array
+                        # or a single string
+                        if is_list and op in ['in', 'ni', 'not-in']:
+                            comparison = OPERATORS['intersect' if op == 'in' else 'difference']
+                        elif not is_list and (op in ['intersect', 'difference'] or
+                                 (op in ['eq', 'equal', 'not-equal', 'ne'] and require_list)):
+                            statement_value = [statement_value]
+                        elif is_list and not require_list:
+                            # Match any for string operations against a list
+                            string_comparison = OPERATORS[op]
+
+                            def comparison(statement_value, required_value):
+                                return any([string_comparison(value, required_value)
+                                            for value in statement_value])
+
+                        match = comparison(statement_value, required_value)
+                    if match:
+                        found += 1
+
+                if found and found == len(required_statement):
+                    required_statements.remove(required_statement)
+                    break
+
+        if (self.data.get('statement_ids', []) and not required) or \
+                (self.data.get('statements', []) and not required_statements):
+            return resc
+        return None
+
+    def normalize_action(self, obj):
+        """
+        Ensure values are lower case for consistent matching
+        (e.g. sns:AddPermssion vs SNS:AddPermission)
+        :param obj: action values that may be a list, string, or None
+        :return: lowercased value
+        """
+        if isinstance(obj, list):
+            return [item.lower() for item in obj]
+        elif isinstance(obj, six.string_types):
+            return obj.lower()
+        else:
+            return obj

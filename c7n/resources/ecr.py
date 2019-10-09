@@ -17,7 +17,7 @@ import json
 
 from c7n.actions import RemovePolicyBase, Action
 from c7n.exceptions import PolicyValidationError
-from c7n.filters import CrossAccountAccessFilter, Filter, ValueFilter
+from c7n.filters import CrossAccountAccessFilter, HasStatementFilter, Filter, ValueFilter
 from c7n.manager import resources
 from c7n.query import QueryResourceManager, TypeInfo
 from c7n import tags
@@ -159,6 +159,42 @@ class ECRCrossAccountAccessFilter(CrossAccountAccessFilter):
             resources = list(filter(None, w.map(_augment, resources)))
 
         return super(ECRCrossAccountAccessFilter, self).process(resources, event)
+
+
+@ECR.filter_registry.register('has-statement')
+class ECRHasStatementFilter(HasStatementFilter):
+    """Filters all EC2 Container Registries (ECR) with the given resource policy statements
+
+    :example:
+
+    .. code-block:: yaml
+
+            policies:
+              - name: ecr-cross-account
+                resource: ecr
+                filters:
+                  - type: has-statement
+                    statement_ids
+    """
+    permissions = ('ecr:GetRepositoryPolicy',)
+
+    def process(self, resources, event=None):
+
+        client = local_session(self.manager.session_factory).client('ecr')
+
+        def _augment(r):
+            try:
+                r['Policy'] = client.get_repository_policy(
+                    repositoryName=r['repositoryName'])['policyText']
+            except client.exceptions.RepositoryPolicyNotFoundException:
+                return None
+            return r
+
+        self.log.debug("fetching policy for %d repos" % len(resources))
+        with self.executor_factory(max_workers=2) as w:
+            resources = list(filter(None, w.map(_augment, resources)))
+
+        return super(HasStatementFilter, self).process(resources, event)
 
 
 LIFECYCLE_RULE_SCHEMA = {

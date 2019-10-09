@@ -18,7 +18,7 @@ from botocore.exceptions import ClientError
 import json
 
 from c7n.actions import RemovePolicyBase, BaseAction
-from c7n.filters import Filter, CrossAccountAccessFilter, ValueFilter
+from c7n.filters import Filter, CrossAccountAccessFilter, HasStatementFilter, ValueFilter
 from c7n.manager import resources
 from c7n.query import QueryResourceManager, RetryPageIterator, TypeInfo
 from c7n.utils import local_session, type_schema
@@ -151,6 +151,26 @@ class KMSCrossAccountAccessFilter(CrossAccountAccessFilter):
 
         return super(KMSCrossAccountAccessFilter, self).process(
             resources, event)
+
+
+@Key.filter_registry.register('has-statement')
+@KeyAlias.filter_registry.register('has-statement')
+class KMSHasStatementFilter(HasStatementFilter):
+    """Filter KMS keys which have cross account permissions
+
+    :example:
+
+    .. code-block:: yaml
+
+            policies:
+              - name: check-kms-key-has-root-statement
+                resource: kms-key
+                filters:
+                  - type: has-statement
+                    statements_ids:
+                        - Allow access for Key Administrators
+    """
+    permissions = ('kms:GetKeyPolicy',)
 
 
 @KeyAlias.filter_registry.register('grant-count')

@@ -18,7 +18,7 @@ from botocore.exceptions import ClientError
 import json
 
 from c7n.actions import RemovePolicyBase
-from c7n.filters import CrossAccountAccessFilter, MetricsFilter
+from c7n.filters import CrossAccountAccessFilter, HasStatementFilter, MetricsFilter
 from c7n.filters.kms import KmsRelatedFilter
 from c7n.manager import resources
 from c7n.utils import local_session
@@ -110,6 +110,30 @@ class SQSCrossAccount(CrossAccountAccessFilter):
                 resource: sqs
                 filters:
                   - type: cross-account
+    """
+    permissions = ('sqs:GetQueueAttributes',)
+
+
+@SQS.filter_registry.register('has-statement')
+class SQSHasStatement(HasStatementFilter):
+    """Filter SQS queues which have specific
+
+    :example:
+
+    .. code-block:: yaml
+
+            policies:
+              - name: sqs-has-allow-all-without-condition
+                resource: sqs
+                filters:
+                  - type: has-statement
+                    statements:
+                        - Effect: Allow
+                          Action:
+                            op: intersect
+                            value: ['sqs:*']
+                          Condition:
+                            value: null
     """
     permissions = ('sqs:GetQueueAttributes',)
 

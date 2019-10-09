@@ -16,7 +16,7 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 import json
 
 from c7n.actions import RemovePolicyBase, ModifyPolicyBase, BaseAction
-from c7n.filters import CrossAccountAccessFilter, PolicyChecker
+from c7n.filters import CrossAccountAccessFilter, HasStatementFilter, PolicyChecker
 from c7n.filters.kms import KmsRelatedFilter
 from c7n.manager import resources
 from c7n.query import QueryResourceManager, TypeInfo
@@ -62,6 +62,7 @@ class SNS(QueryResourceManager):
 
 
 SNS.filter_registry.register('marked-for-op', TagActionFilter)
+SNS.filter_registry.register('has-statement', HasStatementFilter)
 
 
 @SNS.action_registry.register('tag')

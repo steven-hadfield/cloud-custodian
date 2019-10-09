@@ -35,7 +35,7 @@ from c7n.actions import BaseAction
 from c7n.exceptions import PolicyValidationError
 from c7n.filters import ValueFilter, Filter
 from c7n.filters.multiattr import MultiAttrFilter
-from c7n.filters.iamaccess import CrossAccountAccessFilter
+from c7n.filters.iamaccess import CrossAccountAccessFilter, HasStatementFilter
 from c7n.manager import resources
 from c7n.query import QueryResourceManager, DescribeSource, TypeInfo
 from c7n.resolver import ValuesFrom
@@ -978,6 +978,24 @@ class UnusedIamPolicies(Filter):
     def process(self, resources, event=None):
         return [r for r in resources if
                 r['AttachmentCount'] == 0 and r.get('PermissionsBoundaryUsageCount', 0) == 0]
+
+
+@Policy.filter_registry.register('has-statement')
+class PolicyHasStatementFilter(HasStatementFilter):
+    permissions = ('iam:ListPolicies', 'iam:ListPolicyVersions')
+
+    def process(self, resources, event=None):
+        self.client = local_session(self.manager.session_factory).client('iam')
+        return super(HasStatementFilter, self).process(resources)
+
+    def get_resource_policy(self, resource):
+        policy = self.client.get_policy_version(
+            PolicyArn=resource['Arn'],
+            VersionId=resource['DefaultVersionId']
+        )['PolicyVersion']['Document']
+        if isinstance(policy['Statement'], dict):
+            policy['Statement'] = [policy['Statement']]
+        return policy
 
 
 @Policy.filter_registry.register('has-allow-all')

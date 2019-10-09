@@ -18,7 +18,7 @@ from botocore.exceptions import ClientError
 import json
 
 from c7n.actions import RemovePolicyBase
-from c7n.filters import CrossAccountAccessFilter
+from c7n.filters import CrossAccountAccessFilter, HasStatementFilter
 from c7n.query import QueryResourceManager, TypeInfo
 from c7n.manager import resources
 from c7n.utils import get_retry, local_session
@@ -72,6 +72,54 @@ class GlacierCrossAccountAccessFilter(CrossAccountAccessFilter):
                     whitelist:
                       - permitted-account-01
                       - permitted-account-02
+    """
+    permissions = ('glacier:GetVaultAccessPolicy',)
+
+    def process(self, resources, event=None):
+        def _augment(r):
+            client = local_session(
+                self.manager.session_factory).client('glacier')
+            try:
+                r['Policy'] = client.get_vault_access_policy(
+                    vaultName=r['VaultName'])['policy']['Policy']
+                return r
+            except ClientError as e:
+                if e.response['Error']['Code'] == 'AccessDeniedException':
+                    self.log.warning(
+                        "Access denied getting policy glacier:%s",
+                        r['FunctionName'])
+
+        self.log.debug("fetching policy for %d glacier" % len(resources))
+        with self.executor_factory(max_workers=3) as w:
+            resources = list(filter(None, w.map(_augment, resources)))
+
+        return super(GlacierCrossAccountAccessFilter, self).process(
+            resources, event)
+
+
+@Glacier.filter_registry.register('has-statement')
+class GlacierHasStatementFilter(HasStatementFilter):
+    """Filter to return all glacier vaults with matching resources policy statements
+
+    The whitelist parameter will omit the accounts that match from the return
+
+    :example:
+
+        .. code-block:
+
+            policies:
+              - name: check-glacier-deny-non-mfa-delete
+                resource: glacier
+                filters:
+                  - type: has-statement
+                    statements:
+                        - Effect: Deny
+                          Action:
+                            op: intersect
+                            value: ['glacier:Delete*', 'glacier:DeleteVault']
+                          Condition:
+                            Bool:
+                              "aws:MultiFactorAuthPresent": false
     """
     permissions = ('glacier:GetVaultAccessPolicy',)
 
